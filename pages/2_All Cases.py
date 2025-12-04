@@ -1,7 +1,7 @@
 import streamlit as st
 from pages.helper import db_queries
 from pages.helper.streamlit_helpers import require_login
-
+from datetime import datetime
 
 def case_viewer(case):
     case = list(case)
@@ -49,6 +49,15 @@ def public_case_viewer(case: list) -> None:
     ):
         if text == "Status":
             value = "Found" if value == "F" else "Not Found"
+        
+        if text == "Submitted on": 
+            try:
+                # Assuming value is an ISO-formatted string from DB (e.g., 'YYYY-MM-DD HH:MM:SS.SSSSSS')
+                dt_object = datetime.fromisoformat(str(value)) 
+                value = dt_object.strftime("%b %d, %Y at %I:%M %p") # Format: Nov 28, 2025 at 04:30 PM
+            except ValueError:
+                # Handle cases where the date format is unexpected
+                value = str(value) + " (Format Error)"
 
         data_col.write(f"{text}: {value}")
 
