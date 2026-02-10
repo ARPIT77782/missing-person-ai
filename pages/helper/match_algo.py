@@ -1,47 +1,32 @@
-import os
-import pickle
 import json
 import traceback
-import warnings
 from collections import defaultdict
 
-import pandas as pd
 import numpy as np
-
-
-warnings.filterwarnings(action="ignore")
-
+import pandas as pd
+from sklearn.metrics.pairwise import cosine_similarity
 
 from pages.helper import db_queries
+from pages.helper.data_models import RegisteredCases
+from pages.helper.db_queries import engine
+from sqlmodel import Session, select
 
+
+# ---------------- LOAD DATA ---------------- #
 
 def get_public_cases_data(status="NF"):
     try:
         result = db_queries.fetch_public_cases(train_data=True, status=status)
-        d1 = pd.DataFrame(result, columns=["label", "face_mesh"])
-        d1["face_mesh"] = d1["face_mesh"].apply(lambda x: json.loads(x))
-        d2 = pd.DataFrame(d1.pop("face_mesh").values.tolist(), index=d1.index).rename(
-            columns=lambda x: "fm_{}".format(x + 1)
-        )
-        df = d1.join(d2)
-        # Ensure all columns except label are float
-        for col in df.columns:
-            if col != "label":
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = pd.DataFrame(result, columns=["id", "face_mesh"])
+        df["face_mesh"] = df["face_mesh"].apply(json.loads)
         return df
-
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
         return None
 
 
 def get_registered_cases_data(status="NF"):
     try:
-        from pages.helper.db_queries import engine, RegisteredCases
-        import pandas as pd
-        import json
-        from sqlmodel import Session, select
-
         with Session(engine) as session:
             result = session.exec(
                 select(
@@ -50,78 +35,99 @@ def get_registered_cases_data(status="NF"):
                     RegisteredCases.status,
                 )
             ).all()
-            d1 = pd.DataFrame(result, columns=["label", "face_mesh", "status"])
-            if status:
-                d1 = d1[d1["status"] == status]
-            d1["face_mesh"] = d1["face_mesh"].apply(lambda x: json.loads(x))
-            d2 = pd.DataFrame(
-                d1.pop("face_mesh").values.tolist(), index=d1.index
-            ).rename(columns=lambda x: "fm_{}".format(x + 1))
-            df = d1.join(d2)
-            # Ensure all columns except label and status are float
-            for col in df.columns:
-                if col not in ["label", "status"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-            return df
-    except Exception as e:
+
+        df = pd.DataFrame(result, columns=["id", "face_mesh", "status"])
+        df = df[df["status"] == status]
+        df["face_mesh"] = df["face_mesh"].apply(json.loads)
+        return df
+    except Exception:
         traceback.print_exc()
         return None
 
 
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import LabelEncoder
+# ---------------- UTILITIES ---------------- #
+
+def l2_normalize(vec):
+    try:
+        vec = np.asarray(vec, dtype=np.float32)
+        if vec.ndim != 1 or vec.size == 0:
+            return None
+
+        norm = np.linalg.norm(vec)
+        if norm == 0 or np.isnan(norm):
+            return None
+
+        return vec / norm
+    except Exception:
+        return None
 
 
-def match(distance_threshold=3):
+# ---------------- CORE MATCHING ---------------- #
+
+def match(similarity_threshold=0.50):
+    """
+    Realistic thresholds:
+        0.75+ → FaceID / Banking
+        0.60+ → Corporate
+        0.45–0.55 → Police / Missing persons (YOU)
+    """
+
     matched_images = defaultdict(list)
-    public_cases_df = get_public_cases_data()
-    registered_cases_df = get_registered_cases_data()
 
-    if public_cases_df is None or registered_cases_df is None:
-        return {"status": False, "message": "Couldn't connect to database"}
-    if len(public_cases_df) == 0 or len(registered_cases_df) == 0:
-        return {"status": False, "message": "No public or registered cases found"}
+    public_df = get_public_cases_data(status="NF")
+    reg_df = get_registered_cases_data(status="NF")
 
-    # Store original labels before encoding
-    original_reg_labels = registered_cases_df.iloc[:, 0].tolist()
-    original_pub_labels = public_cases_df.iloc[:, 0].tolist()
+    if public_df is None or reg_df is None:
+        return {"status": False, "message": "Database error"}
 
-    # Prepare training data - use index positions as labels for the classifier
-    reg_features = registered_cases_df.iloc[:, 2:].values.astype(float)
+    if len(public_df) == 0 or len(reg_df) == 0:
+        return {"status": False, "message": "No comparable cases"}
 
-    # Create simple numeric labels for KNN (0, 1, 2, ...)
-    numeric_labels = list(range(len(reg_features)))
+    # ---------------- NORMALIZE ---------------- #
 
-    # Train KNN classifier with numeric labels
-    knn = KNeighborsClassifier(n_neighbors=1, algorithm="ball_tree", weights="distance")
-    knn.fit(reg_features, numeric_labels)
+    reg_vectors = []
+    reg_ids = []
 
-    # For each public submission, find the closest registered case
-    for i, row in public_cases_df.iterrows():
-        pub_label = original_pub_labels[i]  # Original public case ID
-        face_encoding = np.array(row[1:]).astype(float)
+    for _, row in reg_df.iterrows():
+        emb = l2_normalize(row["face_mesh"])
+        if emb is not None and emb.shape[0] == 512:
+            reg_vectors.append(emb)
+            reg_ids.append(row["id"])
 
-        try:
-            # Get distances to nearest neighbors
-            closest_distances = knn.kneighbors([face_encoding])[0][0]
-            closest_distance = np.min(closest_distances)
-            print(f"Distance for case {pub_label}: {closest_distance}")
+    pub_vectors = []
+    pub_ids = []
 
-            # Check if distance meets threshold criteria
-            if closest_distance >= distance_threshold:  # Lower distance = better match
-                # Get the index of the predicted registered case
-                predicted_idx = knn.predict([face_encoding])[0]
-                # Get the original UUID of the registered case
-                reg_label = original_reg_labels[predicted_idx]
-                # Store the match
-                matched_images[reg_label].append(pub_label)
-        except Exception as e:
-            print(f"Error processing public case {pub_label}: {str(e)}")
-            continue
+    for _, row in public_df.iterrows():
+        emb = l2_normalize(row["face_mesh"])
+        if emb is not None and emb.shape[0] == 512:
+            pub_vectors.append(emb)
+            pub_ids.append(row["id"])
+
+    if not reg_vectors or not pub_vectors:
+        return {"status": False, "message": "No valid embeddings"}
+
+    reg_vectors = np.vstack(reg_vectors)
+    pub_vectors = np.vstack(pub_vectors)
+
+    # ---------------- SIMILARITY ---------------- #
+
+    similarity_matrix = cosine_similarity(pub_vectors, reg_vectors)
+
+    for i, pub_id in enumerate(pub_ids):
+        best_idx = int(np.argmax(similarity_matrix[i]))
+        best_score = float(similarity_matrix[i][best_idx])
+        reg_id = reg_ids[best_idx]
+
+        print(f"Similarity {pub_id} → {reg_id}: {best_score:.3f}")
+
+        if best_score >= similarity_threshold:
+            matched_images[reg_id].append(pub_id)
+
+            # Atomic DB update
+            db_queries.link_cases(reg_id, pub_id)
 
     return {"status": True, "result": matched_images}
 
 
 if __name__ == "__main__":
-    result = match()
-    print(result)
+    print(match())

@@ -1,41 +1,36 @@
 import streamlit as st
-
+import os
 from pages.helper import db_queries, match_algo, train_model
 from pages.helper.streamlit_helpers import require_login
 
 
+@require_login
 def case_viewer(registered_case_id, public_case_id):
     try:
-        # Use IDs directly as strings (no UUID conversion needed)
-        # Get case details using the string IDs
         case_details = db_queries.get_registered_case_detail(registered_case_id)[0]
+
         data_col, image_col = st.columns(2)
+
         for text, value in zip(
-            ["Name", "Mobile", "Age", "Last Seen", "Birth marks"], case_details
+            ["Name", "Mobile", "Age", "Last Seen", "Birth marks"],
+            case_details[:-1],
         ):
             data_col.write(f"{text}: {value}")
 
-        # Update status with properly formatted UUIDs
-        db_queries.update_found_status(registered_case_id, public_case_id)
-        st.success(
-            "Status Changed. Next time it will be only visible in confirmed cases page"
-        )
+        image_path = case_details[-1]
 
-        # Display image
-        try:
-            image_col.image(
-                "./resources/" + registered_case_id + ".jpg",
-                width=80,
-                use_container_width=False,
-            )
-        except Exception as img_err:
-            st.warning(f"Could not load image: {str(img_err)}")
+        db_queries.update_found_status(registered_case_id, public_case_id)
+        st.success("Status Changed. Next time it will be only visible in confirmed cases")
+
+        if image_path and os.path.exists(image_path):
+            image_col.image(image_path, width="stretch")
+        else:
+            image_col.warning("Image not found on disk")
 
     except Exception as e:
         import traceback
-
         traceback.print_exc()
-        st.error(f"Something went wrong: {str(e)}. Please check logs")
+        st.error(f"Something went wrong: {str(e)}")
 
 
 if "login_status" not in st.session_state:
@@ -47,14 +42,13 @@ elif st.session_state["login_status"]:
     st.title("Check for match")
 
     col1, col2 = st.columns(2)
-
     refresh_bt = col1.button("Refresh")
+
     st.write("---")
 
     if refresh_bt:
         with st.spinner("Fetching Data and Training Model..."):
-            result = train_model.train(user)
-
+            train_model.train(user)
             matched_ids = match_algo.match()
 
             if matched_ids["status"]:

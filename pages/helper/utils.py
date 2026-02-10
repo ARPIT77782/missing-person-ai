@@ -1,29 +1,44 @@
-import PIL
 import numpy as np
+import cv2
+import PIL
 import streamlit as st
-import mediapipe as mp
+from insightface.app import FaceAnalysis
+
+# Load InsightFace model once (global singleton)
+app = FaceAnalysis(
+    name="buffalo_l",
+    providers=["CPUExecutionProvider"]
+)
+app.prepare(ctx_id=0, det_size=(640, 640))
 
 
 def image_obj_to_numpy(image_obj) -> np.ndarray:
-    """Convert a Streamlit-uploaded image object to a numpy array."""
-    image = PIL.Image.open(image_obj)
+    """
+    Convert Streamlit image object to RGB numpy array
+    (for correct UI display)
+    """
+    image = PIL.Image.open(image_obj).convert("RGB")
     return np.array(image)
 
 
-def extract_face_mesh_landmarks(image: np.ndarray):
+def extract_face_embedding(image_rgb: np.ndarray):
     """
-    Extract face mesh landmarks from an image using MediaPipe.
-    Returns a flattened list of all (x, y, z) landmarks if a face is found, else None.
+    Extract 512-D identity embedding using InsightFace.
+    Converts RGB → BGR internally (required by InsightFace).
     """
-    mp_face_mesh = mp.solutions.face_mesh
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, refine_landmarks=True
-    ) as face_mesh:
-        results = face_mesh.process(image)
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
-            # Flatten all landmarks into a single list [x1, y1, z1, x2, y2, z2, ...]
-            return [coord for lm in landmarks for coord in (lm.x, lm.y, lm.z)]
-        else:
-            st.error("Couldn't find face mesh in image. Please try another image.")
+    try:
+        # 🔥 CRITICAL FIX: RGB → BGR for model
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+
+        faces = app.get(image_bgr)
+
+        if faces is None or len(faces) == 0:
+            st.error("No face detected. Please upload a clear face image.")
             return None
+
+        embedding = faces[0].embedding  # (512,)
+        return embedding.astype(float).tolist()
+
+    except Exception as e:
+        st.error(f"Face extraction failed: {str(e)}")
+        return None

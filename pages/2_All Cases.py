@@ -1,65 +1,58 @@
 import streamlit as st
+import os
 from pages.helper import db_queries
 from pages.helper.streamlit_helpers import require_login
 
 
 def case_viewer(case):
-    case = list(case)
-    case_id = case.pop(0)
-    matched_with_id = case.pop(-1)
     matched_with_details = None
 
-    try:
-        matched_with_id = matched_with_id.replace("{", "").replace("}", "")
-    except:
-        matched_with = None
-
-    if matched_with_id:
-        matched_with_details = db_queries.get_public_case_detail(matched_with_id)
+    if case.matched_with:
+        matched_with_details = db_queries.get_public_case_detail(case.matched_with)
 
     data_col, image_col, matched_with_col = st.columns(3)
-    for text, value in zip(["Name", "Age", "Status", "Last Seen", "Phone"], case):
-        if value == "F":
-            value = "Found"
-        elif value == "NF":
-            value = "Not Found"
-        data_col.write(f"{text}: {value}")
 
-    image_col.image(
-        "./resources/" + str(case_id) + ".jpg",
-        width=120,
-        use_container_width=False,
-    )
+    status = "Found" if case.status == "F" else "Not Found"
+
+    data_col.write(f"Name: {case.name}")
+    data_col.write(f"Age: {case.age}")
+    data_col.write(f"Status: {status}")
+    data_col.write(f"Last Seen: {case.last_seen}")
+    data_col.write(f"Phone: {case.complainant_mobile}")
+
+    # 🔥 Correct image
+    if case.image_path and os.path.exists(case.image_path):
+        image_col.image(case.image_path, width=200)
+    else:
+        image_col.warning("Couldn't load image")
+
     if matched_with_details:
-        matched_with_col.write(f"Location: {matched_with_details[0][0]}")
-        matched_with_col.write(f"Submitted By: {matched_with_details[0][1]}")
-        matched_with_col.write(f"Mobile: {matched_with_details[0][2]}")
-        matched_with_col.write(f"Birth Marks: {matched_with_details[0][3]}")
+        pub = matched_with_details[0]
+        matched_with_col.write(f"Location: {pub.location}")
+        matched_with_col.write(f"Submitted By: {pub.submitted_by}")
+        matched_with_col.write(f"Mobile: {pub.mobile}")
+        matched_with_col.write(f"Birth Marks: {pub.birth_marks}")
+
     st.write("---")
 
 
-def public_case_viewer(case: list) -> None:
-    case = list(case)
-    case_id = str(case.pop(0))
-
+def public_case_viewer(case):
     data_col, image_col, _ = st.columns(3)
-    for text, value in zip(
-        ["Status", "Location", "Mobile", "Birth Marks", "Submitted on", "Submitted by"],
-        case,
-    ):
-        if text == "Status":
-            value = "Found" if value == "F" else "Not Found"
 
-        data_col.write(f"{text}: {value}")
+    status = "Found" if case.status == "F" else "Not Found"
 
-    try:
-        image_col.image(
-            "./resources/" + case_id + ".jpg",
-            width=120,
-            use_container_width=False,
-        )
-    except Exception as e:
-        st.warning("Couldn't load image")
+    data_col.write(f"Status: {status}")
+    data_col.write(f"Location: {case.location}")
+    data_col.write(f"Mobile: {case.mobile}")
+    data_col.write(f"Birth Marks: {case.birth_marks}")
+    data_col.write(f"Submitted on: {case.submitted_on}")
+    data_col.write(f"Submitted by: {case.submitted_by}")
+
+    # 🔥 Correct image
+    if case.image_path and os.path.exists(case.image_path):
+        image_col.image(case.image_path, width=200)
+    else:
+        image_col.warning("Couldn't load image")
 
     st.write("---")
 
@@ -78,17 +71,14 @@ elif st.session_state["login_status"]:
     )
     date = date_col.date_input("Date")
 
+    st.write("---")
+
     if status == "Public Cases":
         cases_data = db_queries.fetch_public_cases(False, status)
-        st.write("\n\n")
-        st.write("---")
         for case in cases_data:
             public_case_viewer(case)
-
     else:
         cases_data = db_queries.fetch_registered_cases(user, status)
-        st.write("\n\n")
-        st.write("---")
         for case in cases_data:
             case_viewer(case)
 
